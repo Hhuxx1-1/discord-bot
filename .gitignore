@@ -1,0 +1,16 @@
+# Environment variables
+.env
+
+# Node.js files
+node_modules/
+npm-debug.log
+
+# IDE specific files
+.vscode/
+.idea/
+
+# macOS specific files
+.DS_Store
+
+# Optional: Ignore package-lock.json if you want
+# package-lock.json

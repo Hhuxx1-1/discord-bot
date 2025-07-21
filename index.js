@@ -1,4 +1,4 @@
-require('dotenv').config(); // This must be FIRST
+require('dotenv').config();
 const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 
 const client = new Client({
@@ -12,8 +12,9 @@ const client = new Client({
 });
 
 // Configuration
-const PLAYER_ROLE_ID = '1396576572080656525'; // Create this role in your server
-const SecondKick = 20; // 10 seconds
+const PLAYER_ROLE_ID = '1396576572080656525';
+const WELCOME_CHANNEL_ID = '1396605311300931624';
+const SecondKick = 20;
 const MAX_KICKS = 3;
 
 const kickCounts = new Map();
@@ -53,7 +54,7 @@ client.on('guildMemberAdd', async (member) => {
   welcomeMessages.set(member.id, message.id);
 
   // Start countdown
-  let secondsLeft = SecondKick+1;
+  let secondsLeft = SecondKick + 1;
   const countdown = setInterval(async () => {
     secondsLeft--;
     
@@ -73,15 +74,7 @@ client.on('guildMemberAdd', async (member) => {
         countdownIntervals.delete(member.id);
         
         if (!member.roles.cache.has(PLAYER_ROLE_ID)) {
-          const finalEmbed = new EmbedBuilder()
-            .setTitle(`# Bye Bye ${member.user.username}`)
-            .setColor('#000000');
-          
-          await message.edit({
-            embeds: [finalEmbed],
-            components: []
-          });
-          
+          await message.delete(); // Delete the original embed
           await handleKick(member);
         }
       }
@@ -94,7 +87,6 @@ client.on('guildMemberAdd', async (member) => {
   countdownIntervals.set(member.id, countdown);
 });
 
-// Handle button click
 client.on('interactionCreate', async interaction => {
   if (!interaction.isButton()) return;
   if (interaction.customId !== 'accept_role') return;
@@ -111,19 +103,37 @@ client.on('interactionCreate', async interaction => {
 
     await member.roles.add(role);
     
-    const welcomeEmbed = new EmbedBuilder()
-      .setTitle(`# Welcome Player ${member.user.username}`)
-      .setColor('#00FF00');
-    
+    // Get and delete the original message
     const messageId = welcomeMessages.get(member.id);
     if (messageId) {
-      const originalMessage = await interaction.channel.messages.fetch(messageId);
-      await originalMessage.edit({
-        embeds: [welcomeEmbed],
-        components: []
-      });
+      try {
+        const originalMessage = await interaction.channel.messages.fetch(messageId);
+        await originalMessage.delete();
+      } catch (error) {
+        console.error('Error deleting message:', error);
+      }
     }
     
+    // Send welcome message to designated channel
+    const welcomeChannel = interaction.guild.channels.cache.get(WELCOME_CHANNEL_ID);
+    if (welcomeChannel) {
+      await welcomeChannel.send({
+        content: `${member}`,
+        embeds: [
+          new EmbedBuilder()
+            .setTitle(`Welcome ${member.user.username}!`)
+            .setDescription('You now have access to the player channels!')
+            .setColor('#00FF00')
+        ]
+      });
+    }
+
+    // Update interaction response
+    await interaction.followUp({ 
+      content: 'You have accepted the Player role! You can now access the new player channels.', 
+      ephemeral: true 
+    });
+
     // Clear any existing timers
     const countdown = countdownIntervals.get(member.id);
     if (countdown) {
@@ -137,10 +147,12 @@ client.on('interactionCreate', async interaction => {
       kickTimers.delete(member.id);
     }
 
-    await interaction.followUp({ content: 'You have accepted the Player role!', ephemeral: true });
   } catch (error) {
     console.error('Button interaction error:', error);
-    await interaction.followUp({ content: 'An error occurred while assigning the role.', ephemeral: true });
+    await interaction.followUp({ 
+      content: 'An error occurred while assigning the role.', 
+      ephemeral: true 
+    });
   }
 });
 
@@ -159,6 +171,5 @@ async function handleKick(member) {
     console.error(`Error processing kick/ban for ${member.id}:`, error);
   }
 }
-
 
 client.login(process.env.DISCORD_TOKEN);

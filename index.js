@@ -14,7 +14,7 @@ const client = new Client({
 // Configuration
 const PLAYER_ROLE_ID = '1396576572080656525';
 const WELCOME_CHANNEL_ID = '1396605311300931624';
-const SecondKick = 20;
+const SecondKick = 7;
 const MAX_KICKS = 3;
 
 const kickCounts = new Map();

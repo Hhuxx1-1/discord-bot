@@ -7,13 +7,20 @@ const client = new Client({
     GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.GuildMessageReactions,
-    GatewayIntentBits.MessageContent
+    GatewayIntentBits.MessageContent,
+    GatewayIntentBits.GuildVoiceStates
   ]
 });
 
 // Configuration
 const PLAYER_ROLE_ID = '1396576572080656525';
 const WELCOME_CHANNEL_ID = '1396605311300931624';
+const VOICE_ROLE_ID = '1397098569734950952';
+const VOICE_NOTIFICATION_CHANNEL_ID = '1396605311300931624'; // Your welcome channel
+
+const VOICE_NOTIFICATION_COOLDOWN = 30000; // 30 seconds
+const lastNotifications = new Map();
+
 const BASE_KICK_TIME = 20; // seconds
 const MAX_KICKS = 3;
 
@@ -26,9 +33,74 @@ const welcomeMessages = new Map();
 // Wait times in milliseconds (10m, 20m, 40m)
 const WAIT_TIMES = [10 * 60 * 1000, 20 * 60 * 1000, 40 * 60 * 1000]; 
 
-client.on('ready', () => {
+// Add Voice State Update Handler
+client.on('voiceStateUpdate', async (oldState, newState) => {
+
+  // Inside voiceStateUpdate handler:
+  const now = Date.now();
+  const lastNotif = lastNotifications.get(member.id) || 0;
+  if (now - lastNotif < VOICE_NOTIFICATION_COOLDOWN) return;
+  lastNotifications.set(member.id, now);
+  const EXCLUDED_VOICE_CHANNEL_ID = '1397096857154359306';
+  
+  try {
+    const member = newState.member || oldState.member;
+    const guild = member.guild;
+    
+    // Get notification channel
+    const notificationChannel = guild.channels.cache.get(VOICE_NOTIFICATION_CHANNEL_ID);
+    if (!notificationChannel) return;
+
+    // User joined a voice channel
+    if (!oldState.channelId && newState.channelId  && newState.channelId !== EXCLUDED_VOICE_CHANNEL_ID) {
+      // Add voice role
+      await member.roles.add(VOICE_ROLE_ID);
+      
+      // Send notification
+      const voiceChannel = guild.channels.cache.get(newState.channelId);
+      if (voiceChannel) {
+        await notificationChannel.send({
+          content: `${member} Sedang Ada di Voice Chat! ayo bergabung\n${voiceChannel.url}`,
+          allowedMentions: { users: [member.id] }
+        });
+      }
+    }
+    // User left a voice channel
+    else if (oldState.channelId && !newState.channelId && newState.channelId !== EXCLUDED_VOICE_CHANNEL_ID) {
+      // Remove voice role
+      await member.roles.remove(VOICE_ROLE_ID);
+    }
+    // User switched voice channels
+    else if (oldState.channelId !== newState.channelId && newState.channelId !== EXCLUDED_VOICE_CHANNEL_ID) {
+      // Send notification for new channel
+      const newVoiceChannel = guild.channels.cache.get(newState.channelId);
+      if (newVoiceChannel) {
+        await notificationChannel.send({
+          content: `${member} pindah ke voice channel lain! ayo bergabung\n${newVoiceChannel.url}`,
+          allowedMentions: { users: [member.id] }
+        });
+      }
+    }
+  } catch (error) {
+    console.error('Voice state update error:', error);
+  }
+});
+
+// Add this to your ready event
+client.on('ready', async () => {
   console.log(`Bot ready!`);
-  // Load persistent kick counts from database here if needed
+  
+  // Cleanup voice roles
+  const guilds = client.guilds.cache;
+  for (const [_, guild] of guilds) {
+    const membersWithRole = (await guild.members.fetch()).filter(m => m.roles.cache.has(VOICE_ROLE_ID));
+    
+    for (const [_, member] of membersWithRole) {
+      if (!member.voice.channel) {
+        await member.roles.remove(VOICE_ROLE_ID).catch(console.error);
+      }
+    }
+  }
 });
 
 client.on('guildMemberAdd', async (member) => {

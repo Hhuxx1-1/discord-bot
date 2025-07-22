@@ -35,7 +35,6 @@ const WAIT_TIMES = [10 * 60 * 1000, 20 * 60 * 1000, 40 * 60 * 1000];
 
 // Add Voice State Update Handler
 client.on('voiceStateUpdate', async (oldState, newState) => {
-
   // Inside voiceStateUpdate handler:
   const now = Date.now();
   const lastNotif = lastNotifications.get(member.id) || 0;
@@ -44,7 +43,12 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
   const EXCLUDED_VOICE_CHANNEL_ID = '1397096857154359306';
   
   try {
-    const member = newState.member || oldState.member;
+     // First get the member safely
+    const member = newState?.member || oldState?.member;
+    if (!member) {
+      console.log('Voice state update with no member information');
+      return;
+    }
     const guild = member.guild;
     
     // Get notification channel

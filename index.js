@@ -23,6 +23,8 @@ const VOICE_NOTIFICATION_COOLDOWN = 30000; // 30 seconds
 const BASE_KICK_TIME = 20; // seconds
 const MAX_KICKS = 3;
 
+const NOTIFICATION_LIFETIME = 60 * 60 * 1000; // 1 hour in milliseconds
+
 // Storage
 const kickCounts = new Map();
 const waitingTimers = new Map();
@@ -35,6 +37,7 @@ const WAIT_TIMES = [10 * 60 * 1000, 20 * 60 * 1000, 40 * 60 * 1000];
 
 // Voice State Update Handler
 // Voice State Update Handler with cooldown fixes and no pings
+// Modified voiceStateUpdate handler with auto-cleanup
 client.on('voiceStateUpdate', async (oldState, newState) => {
   try {
     const member = newState?.member || oldState?.member;
@@ -43,52 +46,58 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
     const guild = member.guild;
     const notificationChannel = guild.channels.cache.get(VOICE_NOTIFICATION_CHANNEL_ID);
     
-    // Handle role changes immediately without cooldown
+    // Handle role changes immediately
     if (!oldState.channelId && newState.channelId && newState.channelId !== EXCLUDED_VOICE_CHANNEL_ID) {
-      // User joined a non-excluded channel
       await member.roles.add(VOICE_ROLE_ID).catch(console.error);
     } 
     else if (oldState.channelId && !newState.channelId && oldState.channelId !== EXCLUDED_VOICE_CHANNEL_ID) {
-      // User left a non-excluded channel
       await member.roles.remove(VOICE_ROLE_ID).catch(console.error);
     }
     else if (newState.channelId === EXCLUDED_VOICE_CHANNEL_ID) {
-      // User moved to excluded channel
       await member.roles.remove(VOICE_ROLE_ID).catch(console.error);
     }
     else if (oldState.channelId === EXCLUDED_VOICE_CHANNEL_ID && newState.channelId) {
-      // User moved from excluded to any channel
       await member.roles.add(VOICE_ROLE_ID).catch(console.error);
     }
 
-    // Notification handling with cooldown
+    // Notification handling with cooldown and auto-delete
     if (notificationChannel) {
       const now = Date.now();
       const lastNotif = lastNotifications.get(member.id) || 0;
       
       if (now - lastNotif >= VOICE_NOTIFICATION_COOLDOWN) {
-        let message = null;
+        let messageContent = null;
         let voiceChannel = null;
 
         if (!oldState.channelId && newState.channelId && newState.channelId !== EXCLUDED_VOICE_CHANNEL_ID) {
           voiceChannel = guild.channels.cache.get(newState.channelId);
-          message = `**${member.user.username}** bergabung ke Voice Chat!\n${voiceChannel?.url || ''}`;
+          messageContent = `**${member.user.username}** bergabung ke Voice Chat!\n${voiceChannel?.url || ''}`;
         } 
         else if (oldState.channelId !== newState.channelId && newState.channelId !== EXCLUDED_VOICE_CHANNEL_ID) {
           voiceChannel = guild.channels.cache.get(newState.channelId);
           if (oldState.channelId === EXCLUDED_VOICE_CHANNEL_ID) {
-            message = `**${member.user.username}** memulai voice channel!\n${voiceChannel?.url || ''}`;
+            messageContent = `**${member.user.username}** memulai voice channel!\n${voiceChannel?.url || ''}`;
           } else {
-            message = `**${member.user.username}** berpindah ke voice channel lain!\n${voiceChannel?.url || ''}`;
+            messageContent = `**${member.user.username}** berpindah ke voice channel lain!\n${voiceChannel?.url || ''}`;
           }
         }
 
-        if (message && voiceChannel) {
+        if (messageContent && voiceChannel) {
           lastNotifications.set(member.id, now);
-          await notificationChannel.send({
-            content: message,
-            allowedMentions: { parse: [] } // Disable all mentions
+          const sentMessage = await notificationChannel.send({
+            content: messageContent,
+            allowedMentions: { parse: [] }
           });
+
+          // Auto-delete after 1 hour
+          setTimeout(async () => {
+            try {
+              await sentMessage.delete();
+              console.log(`Deleted notification for ${member.user.tag}`);
+            } catch (error) {
+              console.error('Failed to delete message:', error);
+            }
+          }, NOTIFICATION_LIFETIME);
         }
       }
     }

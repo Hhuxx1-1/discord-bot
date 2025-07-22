@@ -43,12 +43,18 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
   const EXCLUDED_VOICE_CHANNEL_ID = '1397096857154359306';
   
   try {
-     // First get the member safely
-    const member = newState?.member || oldState?.member;
+
     if (!member) {
       console.log('Voice state update with no member information');
       return;
     }
+    if (!member.voice) {
+      console.log('Member voice data not available');
+      return;
+    }
+
+     // First get the member safely
+    const member = newState?.member || oldState?.member;
     const guild = member.guild;
     
     // Get notification channel

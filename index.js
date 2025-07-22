@@ -34,55 +34,62 @@ const lastNotifications = new Map();
 const WAIT_TIMES = [10 * 60 * 1000, 20 * 60 * 1000, 40 * 60 * 1000]; 
 
 // Voice State Update Handler
+// Voice State Update Handler with cooldown fixes and no pings
 client.on('voiceStateUpdate', async (oldState, newState) => {
   try {
-    // First get the member safely
     const member = newState?.member || oldState?.member;
-    if (!member) {
-      console.log('Voice state update with no member information');
-      return;
-    }
+    if (!member) return;
 
-    const now = Date.now();
-    const lastNotif = lastNotifications.get(member.id) || 0;
-    if (now - lastNotif < VOICE_NOTIFICATION_COOLDOWN) return;
-    
     const guild = member.guild;
     const notificationChannel = guild.channels.cache.get(VOICE_NOTIFICATION_CHANNEL_ID);
-    if (!notificationChannel) return;
-
-    // User joined a voice channel (not excluded)
+    
+    // Handle role changes immediately without cooldown
     if (!oldState.channelId && newState.channelId && newState.channelId !== EXCLUDED_VOICE_CHANNEL_ID) {
+      // User joined a non-excluded channel
       await member.roles.add(VOICE_ROLE_ID).catch(console.error);
-      
-      const voiceChannel = guild.channels.cache.get(newState.channelId);
-      if (voiceChannel) {
-        lastNotifications.set(member.id, now);
-        await notificationChannel.send({
-          content: `${member} Sedang Ada di Voice Chat! ayo bergabung\n${voiceChannel.url}`,
-          allowedMentions: { users: [member.id] }
-        });
-      }
-    }
-    // User left a voice channel (and it wasn't the excluded one)
+    } 
     else if (oldState.channelId && !newState.channelId && oldState.channelId !== EXCLUDED_VOICE_CHANNEL_ID) {
+      // User left a non-excluded channel
       await member.roles.remove(VOICE_ROLE_ID).catch(console.error);
     }
-    // User switched voice channels (and new channel isn't excluded)
-    else if (oldState.channelId !== newState.channelId && newState.channelId !== EXCLUDED_VOICE_CHANNEL_ID) {
-      const newVoiceChannel = guild.channels.cache.get(newState.channelId);
-      if (newVoiceChannel) {
-        lastNotifications.set(member.id, now);
-        await notificationChannel.send({
-          content: `${member} pindah ke voice channel lain! ayo bergabung\n${newVoiceChannel.url}`,
-          allowedMentions: { users: [member.id] }
-        });
-      }
-    }
-    // Special case: User moved TO excluded channel
     else if (newState.channelId === EXCLUDED_VOICE_CHANNEL_ID) {
-      if (member.roles.cache.has(VOICE_ROLE_ID)) {
-        await member.roles.remove(VOICE_ROLE_ID).catch(console.error);
+      // User moved to excluded channel
+      await member.roles.remove(VOICE_ROLE_ID).catch(console.error);
+    }
+    else if (oldState.channelId === EXCLUDED_VOICE_CHANNEL_ID && newState.channelId) {
+      // User moved from excluded to any channel
+      await member.roles.add(VOICE_ROLE_ID).catch(console.error);
+    }
+
+    // Notification handling with cooldown
+    if (notificationChannel) {
+      const now = Date.now();
+      const lastNotif = lastNotifications.get(member.id) || 0;
+      
+      if (now - lastNotif >= VOICE_NOTIFICATION_COOLDOWN) {
+        let message = null;
+        let voiceChannel = null;
+
+        if (!oldState.channelId && newState.channelId && newState.channelId !== EXCLUDED_VOICE_CHANNEL_ID) {
+          voiceChannel = guild.channels.cache.get(newState.channelId);
+          message = `**${member.user.username}** bergabung ke Voice Chat!\n${voiceChannel?.url || ''}`;
+        } 
+        else if (oldState.channelId !== newState.channelId && newState.channelId !== EXCLUDED_VOICE_CHANNEL_ID) {
+          voiceChannel = guild.channels.cache.get(newState.channelId);
+          if (oldState.channelId === EXCLUDED_VOICE_CHANNEL_ID) {
+            message = `**${member.user.username}** memulai voice channel!\n${voiceChannel?.url || ''}`;
+          } else {
+            message = `**${member.user.username}** berpindah ke voice channel lain!\n${voiceChannel?.url || ''}`;
+          }
+        }
+
+        if (message && voiceChannel) {
+          lastNotifications.set(member.id, now);
+          await notificationChannel.send({
+            content: message,
+            allowedMentions: { parse: [] } // Disable all mentions
+          });
+        }
       }
     }
   } catch (error) {

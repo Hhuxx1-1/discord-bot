@@ -18,6 +18,7 @@ const WELCOME_CHANNEL_ID = '1396605311300931624';
 const VOICE_ROLE_ID = '1397098569734950952';
 const VOICE_NOTIFICATION_CHANNEL_ID = '1396605311300931624';
 const EXCLUDED_VOICE_CHANNEL_ID = '1397096857154359306';
+const WAITING_CHANNEL_ID = '1396311286232518781';
 
 const VOICE_NOTIFICATION_COOLDOWN = 30000; // 30 seconds
 const BASE_KICK_TIME = 20; // seconds
@@ -127,7 +128,7 @@ client.on('ready', async () => {
 
 
 client.on('guildMemberAdd', async (member) => {
-  const channel = member.guild.systemChannel || member.guild.channels.cache.find(ch => ch.permissionsFor(member.guild.me).has('SEND_MESSAGES'));
+  const channel = member.guild.channels.cache.get(WAITING_CHANNEL_ID);
   if (!channel) return;
 
   const kicks = kickCounts.get(member.id) || 0;

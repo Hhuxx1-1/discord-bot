@@ -21,7 +21,7 @@ const EXCLUDED_VOICE_CHANNEL_ID = '1397096857154359306';
 const WAITING_CHANNEL_ID = '1396311286232518781';
 
 const VOICE_NOTIFICATION_COOLDOWN = 30000; // 30 seconds
-const BASE_KICK_TIME = 20; // seconds
+const BASE_KICK_TIME = 30; // seconds
 const MAX_KICKS = 3;
 
 const NOTIFICATION_LIFETIME = 60 * 60 * 1000; // 1 hour in milliseconds
@@ -34,7 +34,7 @@ const welcomeMessages = new Map();
 const lastNotifications = new Map();
 
 // Wait times in milliseconds (10m, 20m, 40m)
-const WAIT_TIMES = [10 * 60 * 1000, 20 * 60 * 1000, 40 * 60 * 1000]; 
+const WAIT_TIMES = [5 * 60 * 1000, 10 * 60 * 1000, 40 * 20 * 1000]; 
 
 // Voice State Update Handler
 // Voice State Update Handler with cooldown fixes and no pings

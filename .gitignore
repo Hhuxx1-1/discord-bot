@@ -14,3 +14,5 @@ npm-debug.log
 
 # Optional: Ignore package-lock.json if you want
 # package-lock.json
+
+.backup_index.js

@@ -22,7 +22,7 @@ const VOICE_ROLE_ID = '1397098569734950952';
 const EXCLUDED_VOICE_CHANNEL_ID = '1397096857154359306';
 
 const VOTE_THRESHOLD = 3;
-const VOTE_EXPIRE_MS = 60 * 1000; // 1 Hour
+const VOTE_EXPIRE_MS = 60 * 60 * 1000; // 1 Hour
 
 // Storage (in-memory only - restarts will lose active votes, but we try to recover via message fetch)
 const activeVotes = new Map(); // memberId → { yes: Set, no: Set, voteMsgId, statusMsgId, expireTimeout, joiner }

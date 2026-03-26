@@ -23,21 +23,24 @@ const VOTE_EXPIRE_MS = 24 * 60 * 60 * 1000; // 1 day
 
 // Storage (in-memory only - restarts will lose active votes, but we try to recover via message fetch)
 const activeVotes = new Map(); // memberId → { yes: Set, no: Set, voteMsgId, statusMsgId, expireTimeout, joiner }
-const lastNotifications = new Map();
-const voiceJoinTimes = new Map();
-const voiceNotificationMessages = new Map();
+// ==================== VOICE JOIN / MOVE NOTIFICATIONS ====================
+// This restores the old behavior: notify when someone joins or moves voice channels
+// Messages stay permanently (no auto-delete) and include the voice channel link
 
-// ==================== VOICE NOTIFICATIONS ====================
+const VOICE_NOTIFICATION_COOLDOWN = 30000; // 30 seconds cooldown per user
+const lastVoiceNotifications = new Map();  // memberId → timestamp
+
 client.on('voiceStateUpdate', async (oldState, newState) => {
   try {
     const member = newState?.member || oldState?.member;
     if (!member) return;
+    console.log(`${member.user.username} has Voice Activity `);
 
     const guild = member.guild;
     const notificationChannel = guild.channels.cache.get(VOICE_NOTIFICATION_CHANNEL_ID);
     if (!notificationChannel) return;
 
-    // === Role management ===
+    // === Voice Role Management (exactly as you provided) ===
     if (!oldState.channelId && newState.channelId && newState.channelId !== EXCLUDED_VOICE_CHANNEL_ID) {
       await member.roles.add(VOICE_ROLE_ID).catch(console.error);
     } 
@@ -51,57 +54,41 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
       await member.roles.add(VOICE_ROLE_ID).catch(console.error);
     }
 
+    // === Notification Logic (Join / Move) ===
     const now = Date.now();
-    const lastNotif = lastNotifications.get(member.id) || 0;
+    const lastNotif = lastVoiceNotifications.get(member.id) || 0;
 
-    // ==================== JOIN / MOVE ====================
+    if (now - lastNotif < VOICE_NOTIFICATION_COOLDOWN) return;
+
+    let messageContent = null;
+    let voiceChannel = null;
+
     if (!oldState.channelId && newState.channelId && newState.channelId !== EXCLUDED_VOICE_CHANNEL_ID) {
-      if (now - lastNotif < VOICE_NOTIFICATION_COOLDOWN) return;
-
-      const voiceChannel = guild.channels.cache.get(newState.channelId);
-      const content = `**${member.user.username}** bergabung ke Voice Chat!\n${voiceChannel?.url || ''}`;
-
-      const sentMessage = await notificationChannel.send({
-        content,
-        allowedMentions: { parse: [] }
-      });
-
-      voiceJoinTimes.set(member.id, now);
-      voiceNotificationMessages.set(member.id, { message: sentMessage, channelId: notificationChannel.id });
-      lastNotifications.set(member.id, now);
-
+      // User joined a voice channel
+      voiceChannel = guild.channels.cache.get(newState.channelId);
+      messageContent = `**${member.user.username}** bergabung ke Voice Chat!\n${voiceChannel?.url || ''}`;
     } 
-    // ==================== LEAVE / SWITCH TO EXCLUDED ====================
-    else if (oldState.channelId && !newState.channelId || 
-             (oldState.channelId !== EXCLUDED_VOICE_CHANNEL_ID && newState.channelId === EXCLUDED_VOICE_CHANNEL_ID)) {
-
-      const joinTime = voiceJoinTimes.get(member.id);
-      if (!joinTime) return;
-
-      const durationMs = now - joinTime;
-      const minutes = Math.floor(durationMs / 60000);
-      const seconds = Math.floor((durationMs % 60000) / 1000);
-      const durationStr = minutes > 0 
-        ? `${minutes} menit ${seconds} detik` 
-        : `${seconds} detik`;
-
-      const data = voiceNotificationMessages.get(member.id);
-      if (data) {
-        try {
-          await data.message.edit({
-            content: `**${member.user.username}** telah keluar dari Voice Chat setelah **${durationStr}**`
-          });
-        } catch (e) {
-          console.error('Failed to edit voice notification:', e);
-        }
+    else if (oldState.channelId !== newState.channelId && newState.channelId && newState.channelId !== EXCLUDED_VOICE_CHANNEL_ID) {
+      // User switched voice channels
+      voiceChannel = guild.channels.cache.get(newState.channelId);
+      if (oldState.channelId === EXCLUDED_VOICE_CHANNEL_ID) {
+        messageContent = `**${member.user.username}** memulai voice channel!\n${voiceChannel?.url || ''}`;
+      } else {
+        messageContent = `**${member.user.username}** berpindah ke voice channel lain!\n${voiceChannel?.url || ''}`;
       }
+    }
 
-      voiceJoinTimes.delete(member.id);
-      voiceNotificationMessages.delete(member.id);
+    if (messageContent && voiceChannel) {
+      lastVoiceNotifications.set(member.id, now);
+
+      await notificationChannel.send({
+        content: messageContent,
+        allowedMentions: { parse: [] }   // prevents unwanted pings
+      });
     }
 
   } catch (error) {
-    console.error('Voice state update error:', error);
+    console.error('Voice notification error:', error);
   }
 });
 

@@ -12,26 +12,18 @@ const client = new Client({
   ]
 });
 
-// Configuration
+// ==================== CONFIG ====================
 const PLAYER_ROLE_ID = '1396576572080656525';
 const WELCOME_CHANNEL_ID = '1396605311300931624';
-const VOICE_ROLE_ID = '1397098569734950952';
-const VOICE_NOTIFICATION_CHANNEL_ID = '1396605311300931624';
-const EXCLUDED_VOICE_CHANNEL_ID = '1397096857154359306';
-const WAITING_CHANNEL_ID = '1396311286232518781'; // still used for player role offer
+const VOICE_NOTIFICATION_CHANNEL_ID = '1396605311300931624'; // Voting goes here
+const WAITING_CHANNEL_ID = '1396311286232518781';           // Status only for the user
 
-const VOICE_NOTIFICATION_COOLDOWN = 30000; // 30 seconds
+const VOTE_THRESHOLD = 5;
+const VOTE_EXPIRE_MS = 24 * 60 * 60 * 1000; // 1 day
 
-const BASE_KICK_TIME = 30; // seconds
+// Storage (in-memory only - restarts will lose active votes, but we try to recover via message fetch)
+const activeVotes = new Map(); // memberId → { yes: Set, no: Set, voteMsgId, statusMsgId, expireTimeout, joiner }
 
-// Storage
-const voiceJoinTimes = new Map();     // memberId → join timestamp
-const voiceNotificationMessages = new Map(); // memberId → { message, channelId }
-const lastNotifications = new Map();
-
-const kickCounts = new Map();         // still needed for the current session countdown
-const welcomeMessages = new Map();
-const countdownIntervals = new Map();
 
 // ==================== VOICE NOTIFICATIONS ====================
 client.on('voiceStateUpdate', async (oldState, newState) => {
@@ -111,146 +103,236 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
   }
 });
 
-// ==================== PLAYER ROLE OFFER (no waiting / ban) ====================
-client.on('guildMemberAdd', async (member) => {
-  const channel = member.guild.channels.cache.get(WAITING_CHANNEL_ID);
-  if (!channel) return;
+// ==================== READY (restart recovery - limited) ====================
+client.on('ready', async () => {
+  console.log(`Bot ready! Logged in as ${client.user.tag}`);
 
-  await offerPlayerRole(member, channel, 0); // always start fresh
+  // Optional: You can add more advanced recovery later with a database if needed
+  console.log('Note: Active votes are in-memory. Long-running votes may need manual check after restart.');
 });
 
-async function offerPlayerRole(member, channel, kicks) {
-  const kickTime = BASE_KICK_TIME * Math.min(kicks + 1, 3);
+// ==================== NEW MEMBER JOIN ====================
+client.on('guildMemberAdd', async (member) => {
+  const voteChannel = member.guild.channels.cache.get(VOICE_NOTIFICATION_CHANNEL_ID);
+  const statusChannel = member.guild.channels.cache.get(WAITING_CHANNEL_ID);
 
+  if (!voteChannel || !statusChannel) return;
+
+  // Create voting embed
   const embed = new EmbedBuilder()
-    .setTitle('# Become Player?')
-    .setDescription(`- You will be kicked in ${kickTime} seconds if not accepting\n- Kick attempts this session: ${kicks}`)
-    .setColor('#FF0000');
+    .setTitle('🗳️ Let This User Join?')
+    .setDescription(`**${member.user.tag}** wants to become a Player.\n\nVote below!`)
+    .setColor('#00AAFF')
+    .setTimestamp();
 
-  const row = new ActionRowBuilder()
-    .addComponents(
-      new ButtonBuilder()
-        .setCustomId('accept_role')
-        .setLabel('Accept Player Role')
-        .setStyle(ButtonStyle.Primary)
-    );
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`vote_yes_${member.id}`).setLabel(`Yes (0/${VOTE_THRESHOLD})`).setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId(`vote_no_${member.id}`).setLabel(`No (0/${VOTE_THRESHOLD})`).setStyle(ButtonStyle.Danger)
+  );
 
-  const message = await channel.send({
-    content: `${member}`,
+  const voteMessage = await voteChannel.send({
+    content: `Voting for ${member}`,
     embeds: [embed],
     components: [row]
   });
 
-  welcomeMessages.set(member.id, message.id);
+  // Status message in Waiting Channel (visible to the joining user)
+  const statusEmbed = new EmbedBuilder()
+    .setTitle('Voting In Progress')
+    .setDescription(`Waiting for community votes for **${member.user.tag}**\n\nYes: 0/${VOTE_THRESHOLD} | No: 0/${VOTE_THRESHOLD}`)
+    .setColor('#FFA500');
 
-  let secondsLeft = kickTime;
-  const countdown = setInterval(async () => {
-    secondsLeft--;
+  const statusMessage = await statusChannel.send({
+    content: `${member}`,
+    embeds: [statusEmbed]
+  });
 
-    try {
-      const updatedEmbed = new EmbedBuilder()
-        .setTitle('# Become Player?')
-        .setDescription(`- You will be kicked in ${secondsLeft} seconds if not accepting\n- Kick attempts this session: ${kicks}`)
-        .setColor(secondsLeft <= 5 ? '#FF0000' : '#FF6600');
+  // Store vote data
+  const voteData = {
+    yes: new Set(),
+    no: new Set(),
+    voteMsgId: voteMessage.id,
+    statusMsgId: statusMessage.id,
+    voteChannelId: voteChannel.id,
+    statusChannelId: statusChannel.id,
+    joiner: member,
+    expireTimeout: setTimeout(() => endVote(member.id, 'expire'), VOTE_EXPIRE_MS)
+  };
 
-      await message.edit({
-        embeds: [updatedEmbed],
-        components: [row]
-      });
+  activeVotes.set(member.id, voteData);
+});
 
-      if (secondsLeft <= 0) {
-        clearInterval(countdown);
-        countdownIntervals.delete(member.id);
+// ==================== BUTTON VOTING ====================
+client.on('interactionCreate', async (interaction) => {
+  if (!interaction.isButton()) return;
 
-        if (!member.roles.cache.has(PLAYER_ROLE_ID)) {
-          await message.delete().catch(() => {});
-          await handleKick(member);
-        }
-      }
-    } catch (error) {
-      console.error('Countdown error:', error);
-      clearInterval(countdown);
-    }
-  }, 1000);
+  const customId = interaction.customId;
+  if (!customId.startsWith('vote_yes_') && !customId.startsWith('vote_no_')) return;
 
-  countdownIntervals.set(member.id, countdown);
-}
+  const isYes = customId.startsWith('vote_yes_');
+  const targetId = customId.split('_')[2];
 
-client.on('interactionCreate', async interaction => {
-  if (!interaction.isButton() || interaction.customId !== 'accept_role') return;
+  const voteData = activeVotes.get(targetId);
+  if (!voteData) {
+    return interaction.reply({ content: 'This voting has already ended.', ephemeral: true });
+  }
 
-  try {
-    await interaction.deferReply({ ephemeral: true });
+  const voterId = interaction.user.id;
+  const joinerId = targetId;
 
-    const member = interaction.member;
-    const role = interaction.guild.roles.cache.get(PLAYER_ROLE_ID);
+  // Prevent the joining user from voting
+  if (voterId === joinerId) {
+    return interaction.reply({ content: 'You cannot vote on your own application.', ephemeral: true });
+  }
 
-    if (!role) {
-      return interaction.followUp({ content: 'Player role not found!', ephemeral: true });
-    }
+  // Record vote
+  if (isYes) {
+    voteData.yes.add(voterId);
+    voteData.no.delete(voterId); // remove opposite vote if changed
+  } else {
+    voteData.no.add(voterId);
+    voteData.yes.delete(voterId);
+  }
 
-    await member.roles.add(role);
+  // Update both messages
+  await updateVoteMessages(voteData);
 
-    // Reset kick count on success
-    kickCounts.delete(member.id);
+  await interaction.reply({ content: `Your vote has been counted!`, ephemeral: true });
 
-    // Delete the offer message
-    const msgId = welcomeMessages.get(member.id);
-    if (msgId) {
-      try {
-        const msg = await interaction.channel.messages.fetch(msgId);
-        await msg.delete();
-      } catch {}
-    }
-
-    // Welcome message
-    const welcomeChannel = interaction.guild.channels.cache.get(WELCOME_CHANNEL_ID);
-    if (welcomeChannel) {
-      await welcomeChannel.send({
-        content: `${member}`,
-        embeds: [
-          new EmbedBuilder()
-            .setTitle(`Welcome ${member.user.username}!`)
-            .setDescription('You now have access to the player channels!')
-            .setColor('#00FF00')
-        ]
-      });
-    }
-
-    await interaction.followUp({ 
-      content: 'You have accepted the Player role! You can now access the new player channels.', 
-      ephemeral: true 
-    });
-
-    clearMemberTimers(member.id);
-
-  } catch (error) {
-    console.error('Button error:', error);
-    await interaction.followUp({ content: 'An error occurred.', ephemeral: true });
+  // Check if threshold reached
+  if (voteData.yes.size >= VOTE_THRESHOLD) {
+    await approveMember(targetId);
+  } else if (voteData.no.size >= VOTE_THRESHOLD) {
+    await rejectMember(targetId, 'majority no');
   }
 });
 
-async function handleKick(member) {
-  try {
-    const kicks = (kickCounts.get(member.id) || 0) + 1;
-    kickCounts.set(member.id, kicks);
+async function updateVoteMessages(voteData) {
+  const yesCount = voteData.yes.size;
+  const noCount = voteData.no.size;
 
-    await member.kick(`Failed to accept role (attempt ${kicks})`);
-    // No ban anymore, even at 3+
-  } catch (error) {
-    console.error(`Kick error for ${member.id}:`, error);
+  // Update voting message (in notification channel)
+  try {
+    const voteChannel = client.channels.cache.get(voteData.voteChannelId);
+    if (voteChannel) {
+      const msg = await voteChannel.messages.fetch(voteData.voteMsgId);
+      const embed = msg.embeds[0];
+
+      const newRow = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(`vote_yes_${voteData.joiner.id}`).setLabel(`Yes (${yesCount}/${VOTE_THRESHOLD})`).setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId(`vote_no_${voteData.joiner.id}`).setLabel(`No (${noCount}/${VOTE_THRESHOLD})`).setStyle(ButtonStyle.Danger)
+      );
+
+      await msg.edit({ embeds: [embed], components: [newRow] });
+    }
+  } catch (e) { console.error('Failed to update vote message:', e); }
+
+  // Update status message (in waiting channel)
+  try {
+    const statusChannel = client.channels.cache.get(voteData.statusChannelId);
+    if (statusChannel) {
+      const statusMsg = await statusChannel.messages.fetch(voteData.statusMsgId);
+      const statusEmbed = new EmbedBuilder()
+        .setTitle('Voting In Progress')
+        .setDescription(`Waiting for community votes for **${voteData.joiner.user.tag}**\n\nYes: ${yesCount}/${VOTE_THRESHOLD} | No: ${noCount}/${VOTE_THRESHOLD}`)
+        .setColor('#FFA500');
+
+      await statusMsg.edit({ embeds: [statusEmbed] });
+    }
+  } catch (e) { console.error('Failed to update status message:', e); }
+}
+
+// ==================== APPROVE / REJECT ====================
+async function approveMember(memberId) {
+  const data = activeVotes.get(memberId);
+  if (!data) return;
+
+  clearVote(data);
+
+  const member = data.joiner;
+  try {
+    await member.roles.add(PLAYER_ROLE_ID);
+
+    const welcomeChannel = member.guild.channels.cache.get(WELCOME_CHANNEL_ID);
+    if (welcomeChannel) {
+      await welcomeChannel.send({
+        content: `${member}`,
+        embeds: [new EmbedBuilder().setTitle(`Welcome ${member.user.username}!`).setDescription('You now have access to the player channels!').setColor('#00FF00')]
+      });
+    }
+
+    // Clean status message
+    try { await member.guild.channels.cache.get(data.statusChannelId)?.messages.fetch(data.statusMsgId).then(m => m.delete()); } catch {}
+  } catch (err) {
+    console.error('Approve error:', err);
   }
 }
 
-function clearMemberTimers(memberId) {
-  const countdown = countdownIntervals.get(memberId);
-  if (countdown) clearInterval(countdown);
-  countdownIntervals.delete(memberId);
-  welcomeMessages.delete(memberId);
+async function rejectMember(memberId, reason) {
+  const data = activeVotes.get(memberId);
+  if (!data) return;
+
+  clearVote(data);
+
+  const member = data.joiner;
+  try {
+    await member.kick(`Voting rejected (${reason})`);
+
+    // Try DM
+    try {
+      await member.send('Your join request has been declined by the members. Please try again later.');
+    } catch (dmErr) {
+      console.log(`Could not DM ${member.user.tag} (DMs disabled or blocked)`);
+    }
+
+    // Notify in status channel
+    try {
+      const statusChannel = member.guild.channels.cache.get(data.statusChannelId);
+      if (statusChannel) {
+        await statusChannel.send(`Voting for ${member} ended. Result: **Declined**.`);
+      }
+    } catch {}
+  } catch (err) {
+    console.error('Reject error:', err);
+  }
 }
 
-client.on('ready', () => {
-  console.log(`Bot ready!`);
+async function endVote(memberId, reason = 'expire') {
+  const data = activeVotes.get(memberId);
+  if (!data) return;
+
+  // If neither reached 5 votes
+  if (data.yes.size < VOTE_THRESHOLD && data.no.size < VOTE_THRESHOLD) {
+    await rejectMember(memberId, reason);
+  }
+}
+
+function clearVote(data) {
+  if (data.expireTimeout) clearTimeout(data.expireTimeout);
+  activeVotes.delete(data.joiner.id);
+}
+
+// ==================== USER LEAVES DURING VOTING ====================
+client.on('guildMemberRemove', async (member) => {
+  const data = activeVotes.get(member.id);
+  if (!data) return;
+
+  clearVote(data);
+
+  try {
+    const voteChannel = member.guild.channels.cache.get(data.voteChannelId);
+    if (voteChannel) {
+      await voteChannel.send(`Voting cancelled — **${member.user.tag}** left the server before voting ended.`);
+    }
+  } catch (e) {}
+});
+
+// Clean up on role add (safety)
+client.on('guildMemberUpdate', async (oldMember, newMember) => {
+  if (!oldMember.roles.cache.has(PLAYER_ROLE_ID) && newMember.roles.cache.has(PLAYER_ROLE_ID)) {
+    const data = activeVotes.get(newMember.id);
+    if (data) clearVote(data);
+  }
 });
 
 client.login(process.env.DISCORD_TOKEN);

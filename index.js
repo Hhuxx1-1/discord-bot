@@ -23,7 +23,9 @@ const VOTE_EXPIRE_MS = 24 * 60 * 60 * 1000; // 1 day
 
 // Storage (in-memory only - restarts will lose active votes, but we try to recover via message fetch)
 const activeVotes = new Map(); // memberId → { yes: Set, no: Set, voteMsgId, statusMsgId, expireTimeout, joiner }
-
+const lastNotifications = new Map();
+const voiceJoinTimes = new Map();
+const voiceNotificationMessages = new Map();
 
 // ==================== VOICE NOTIFICATIONS ====================
 client.on('voiceStateUpdate', async (oldState, newState) => {

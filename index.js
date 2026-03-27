@@ -17,7 +17,7 @@ const PLAYER_ROLE_ID = '1396576572080656525';
 const WELCOME_CHANNEL_ID = '1396605311300931624';
 const VOICE_NOTIFICATION_CHANNEL_ID = '1396605311300931624'; // Voting goes here
 const WAITING_CHANNEL_ID = '1396311286232518781';           // Status only for the user
-
+const SPECIAL_ROLE_ID = '1436155084764479610'; // Role that can vote multiple times
 const VOICE_ROLE_ID = '1397098569734950952';
 const EXCLUDED_VOICE_CHANNEL_ID = '1397096857154359306';
 
@@ -200,6 +200,7 @@ client.on('guildMemberAdd', async (member) => {
 });
 
 // ==================== BUTTON VOTING ====================
+// ==================== BUTTON VOTING (Updated) ====================
 client.on('interactionCreate', async (interaction) => {
   if (!interaction.isButton()) return;
 
@@ -207,34 +208,50 @@ client.on('interactionCreate', async (interaction) => {
   if (!customId.startsWith('vote_yes_') && !customId.startsWith('vote_no_')) return;
 
   const isYes = customId.startsWith('vote_yes_');
-  const targetId = customId.split('_')[2];
+  const targetId = customId.split('_')[2];   // the member who is being voted on
 
   const voteData = activeVotes.get(targetId);
   if (!voteData) {
     return interaction.reply({ content: 'This voting has already ended.', ephemeral: true });
   }
 
-  const voterId = interaction.user.id;
+  const voter = interaction.user;
+  const voterMember = interaction.member;
   const joinerId = targetId;
 
   // Prevent the joining user from voting
-  if (voterId === joinerId) {
+  if (voter.id === joinerId) {
     return interaction.reply({ content: 'You cannot vote on your own application.', ephemeral: true });
   }
 
-  // Record vote
-  if (isYes) {
-    voteData.yes.add(voterId);
-    voteData.no.delete(voterId); // remove opposite vote if changed
-  } else {
-    voteData.no.add(voterId);
-    voteData.yes.delete(voterId);
+  // Check if voter already voted (unless they have the special role)
+  const hasSpecialRole = voterMember.roles.cache.has(SPECIAL_ROLE_ID);
+
+  if (!hasSpecialRole) {
+    if (voteData.yes.has(voter.id) || voteData.no.has(voter.id)) {
+      return interaction.reply({ 
+        content: 'You have already voted!', 
+        ephemeral: true 
+      });
+    }
   }
 
-  // Update both messages
+  // Record the vote
+  if (isYes) {
+    voteData.yes.add(voter.id);
+    voteData.no.delete(voter.id);   // remove opposite vote if they changed
+  } else {
+    voteData.no.add(voter.id);
+    voteData.yes.delete(voter.id);
+  }
+
+  // Update live counters
   await updateVoteMessages(voteData);
 
-  await interaction.reply({ content: `Your vote has been counted!`, ephemeral: true });
+  await interaction.reply({ 
+    content: `Your vote has been counted! (${isYes ? 'Yes' : 'No'})`, 
+    ephemeral: true 
+  });
 
   // Check if threshold reached
   if (voteData.yes.size >= VOTE_THRESHOLD) {
@@ -248,35 +265,69 @@ async function updateVoteMessages(voteData) {
   const yesCount = voteData.yes.size;
   const noCount = voteData.no.size;
 
-  // Update voting message (in notification channel)
+  const isFinished = (yesCount >= VOTE_THRESHOLD) || (noCount >= VOTE_THRESHOLD);
+
+  // Update voting message
   try {
     const voteChannel = client.channels.cache.get(voteData.voteChannelId);
     if (voteChannel) {
       const msg = await voteChannel.messages.fetch(voteData.voteMsgId);
-      const embed = msg.embeds[0];
 
-      const newRow = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(`vote_yes_${voteData.joiner.id}`).setLabel(`Yes (${yesCount}/${VOTE_THRESHOLD})`).setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId(`vote_no_${voteData.joiner.id}`).setLabel(`No (${noCount}/${VOTE_THRESHOLD})`).setStyle(ButtonStyle.Danger)
+      let description = `**${voteData.joiner.user.tag}** wants to become a Player.\n\nVote below!`;
+
+      if (isFinished) {
+        // Show final result + list of voters
+        const yesVoters = Array.from(voteData.yes).map(id => `<@${id}>`).join(', ') || 'None';
+        const noVoters  = Array.from(voteData.no).map(id => `<@${id}>`).join(', ') || 'None';
+
+        description = `**Voting Finished!**\n\n` +
+                      `✅ **Yes**: ${yesCount}/${VOTE_THRESHOLD}\n` +
+                      `❌ **No**: ${noCount}/${VOTE_THRESHOLD}\n\n` +
+                      `**Yes Voters**: ${yesVoters}\n` +
+                      `**No Voters**: ${noVoters}`;
+      }
+
+      const embed = new EmbedBuilder()
+        .setTitle(isFinished ? '🗳️ Voting Result' : '🗳️ Let This User Join?')
+        .setDescription(description)
+        .setColor(isFinished ? (yesCount >= VOTE_THRESHOLD ? '#00FF00' : '#FF0000') : '#00AAFF')
+        .setTimestamp();
+
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`vote_yes_${voteData.joiner.id}`)
+          .setLabel(`Yes (${yesCount}/${VOTE_THRESHOLD})`)
+          .setStyle(ButtonStyle.Success)
+          .setDisabled(isFinished),
+        new ButtonBuilder()
+          .setCustomId(`vote_no_${voteData.joiner.id}`)
+          .setLabel(`No (${noCount}/${VOTE_THRESHOLD})`)
+          .setStyle(ButtonStyle.Danger)
+          .setDisabled(isFinished)
       );
 
-      await msg.edit({ embeds: [embed], components: [newRow] });
+      await msg.edit({ embeds: [embed], components: [row] });
     }
-  } catch (e) { console.error('Failed to update vote message:', e); }
+  } catch (e) {
+    console.error('Failed to update vote message:', e);
+  }
 
-  // Update status message (in waiting channel)
+  // Update status message for the joining user
   try {
     const statusChannel = client.channels.cache.get(voteData.statusChannelId);
     if (statusChannel) {
       const statusMsg = await statusChannel.messages.fetch(voteData.statusMsgId);
+
       const statusEmbed = new EmbedBuilder()
-        .setTitle('Voting In Progress')
-        .setDescription(`Waiting for community votes for **${voteData.joiner.user.tag}**\n\nYes: ${yesCount}/${VOTE_THRESHOLD} | No: ${noCount}/${VOTE_THRESHOLD}`)
-        .setColor('#FFA500');
+        .setTitle(isFinished ? 'Voting Finished' : 'Voting In Progress')
+        .setDescription(`Votes for **${voteData.joiner.user.tag}**\n\nYes: ${yesCount}/${VOTE_THRESHOLD} | No: ${noCount}/${VOTE_THRESHOLD}`)
+        .setColor(isFinished ? (yesCount >= VOTE_THRESHOLD ? '#00FF00' : '#FF0000') : '#FFA500');
 
       await statusMsg.edit({ embeds: [statusEmbed] });
     }
-  } catch (e) { console.error('Failed to update status message:', e); }
+  } catch (e) {
+    console.error('Failed to update status message:', e);
+  }
 }
 
 // ==================== APPROVE / REJECT ====================

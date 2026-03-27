@@ -143,8 +143,33 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
 // ==================== READY (restart recovery - limited) ====================
 client.on('ready', async () => {
   console.log(`Bot ready! Logged in as ${client.user.tag}`);
+  const statuses = [
+    'I Love to Be Alive!',
+    'Hey! I Love You!',
+    `${client.guilds.cache.size} servers`,
+    'Invite Your Friends Here!',
+    'Do Not Be Sad!',
+    'I Always Love You!',
+    'The Sky today Looks Blue',
+    'I Think You are Cute!',
+    'Please Love Me!',
+    'I Wonder Where is Everyone?',
+    'You Are Not Alone, Im Always Here',
+    'Hi, How Are you?',
+    'Do You Like Fish?',
+    'Today is Beautiful',
+    'Do you want Cookies?',
+    'I Love you being here',
+    'Say Good Morning to Your Friend!',
+    'You are the Best!',
+    'Hey, Do you ever Showered?'
+  ];
 
-  // Optional: You can add more advanced recovery later with a database if needed
+  let i = 0;
+  setInterval(() => {
+    client.user.setActivity(statuses[i], { type: 3 });
+    i = (i + 1) % statuses.length;
+  }, 300000); // 300 seconds
   console.log('Note: Active votes are in-memory. Long-running votes may need manual check after restart.');
 });
 
